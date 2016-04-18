@@ -39,11 +39,31 @@ namespace Topshelf.FileSystemWatcher
             return WhenFileSystemChanged(configurator, fileSystemWatcherConfigurator, null, null, fileSystemDeleted, fileSystemDeleted);
         }
 
+        public static ServiceConfigurator<T> WhenFileSystemRenamed<T>(this ServiceConfigurator<T> configurator,
+            Action<FileSystemWatcherConfigurator> fileSystemWatcherConfigurator,
+            Action<RenamedEventArgs> fileSystemRenamed)
+            where T : class
+        {
+            return WhenFileSystemChanged(configurator, fileSystemWatcherConfigurator, null, null, null, fileSystemRenamed, null);
+        }
+
         public static ServiceConfigurator<T> WhenFileSystemChanged<T>(this ServiceConfigurator<T> configurator,
             Action<FileSystemWatcherConfigurator> fileSystemWatcherConfigurator,
             Action<TopshelfFileSystemEventArgs> fileSystemChanged,
             Action<TopshelfFileSystemEventArgs> fileSystemCreated,
             Action<TopshelfFileSystemEventArgs> fileSystemDeleted,
+            Action<TopshelfFileSystemEventArgs> fileSystemInitialState)
+            where T : class
+        {
+            return WhenFileSystemChanged<T>(configurator, fileSystemWatcherConfigurator, fileSystemChanged, fileSystemCreated, fileSystemDeleted, null, fileSystemInitialState);
+        }
+
+        public static ServiceConfigurator<T> WhenFileSystemChanged<T>(this ServiceConfigurator<T> configurator,
+            Action<FileSystemWatcherConfigurator> fileSystemWatcherConfigurator,
+            Action<TopshelfFileSystemEventArgs> fileSystemChanged,
+            Action<TopshelfFileSystemEventArgs> fileSystemCreated,
+            Action<TopshelfFileSystemEventArgs> fileSystemDeleted,
+            Action<RenamedEventArgs> fileSystemRenamed,
             Action<TopshelfFileSystemEventArgs> fileSystemInitialState)
             where T : class
         {
@@ -64,12 +84,18 @@ namespace Topshelf.FileSystemWatcher
             FileSystemEventHandler watcherOnChanged = CreateEventHandler(fileSystemChanged);
             FileSystemEventHandler watcherOnCreated = CreateEventHandler(fileSystemCreated);
             FileSystemEventHandler watcherOnDeleted = CreateEventHandler(fileSystemDeleted);
+            RenamedEventHandler watcherOnRenamed = CreateEventHandler(fileSystemRenamed);
 
             if (configs.Any())
             {
-                BeforeStartingService(configurator, configs, log, watcherOnChanged, watcherOnCreated, watcherOnDeleted);
-                AfterStartingService(configurator, configs, log, fileSystemInitialState);
-                BeforeStoppingService(configurator, log, watcherOnChanged);
+                BeforeStartingService(configurator, configs, log, watcherOnChanged, watcherOnCreated, watcherOnDeleted, watcherOnRenamed);
+
+                if (fileSystemInitialState == null)
+                    AfterStartingService(configurator, configs, log, fileSystemRenamed);
+                else
+                    AfterStartingService(configurator, configs, log, fileSystemInitialState);
+
+                BeforeStoppingService(configurator, log, watcherOnChanged, watcherOnRenamed);
             }
 
             return configurator;
@@ -88,11 +114,25 @@ namespace Topshelf.FileSystemWatcher
             return eventHandler;
         }
 
+        private static RenamedEventHandler CreateEventHandler(Action<RenamedEventArgs> renamedAction)
+        {
+            RenamedEventHandler eventHandler = null;
+
+            if (renamedAction != null)
+            {
+                eventHandler =
+                    (sender, args) => renamedAction(args);
+            }
+
+            return eventHandler;
+        }
+
         private static void BeforeStartingService<T>(ServiceConfigurator<T> configurator,
             IEnumerable<FileSystemWatcherConfigurator.DirectoryConfiguration> configs, LogWriter log,
             FileSystemEventHandler watcherOnChanged,
             FileSystemEventHandler watcherOnCreated,
-            FileSystemEventHandler watcherOnDeleted) where T : class
+            FileSystemEventHandler watcherOnDeleted,
+            RenamedEventHandler watcherOnRenamed) where T : class
         {
             configurator.BeforeStartingService(() =>
             {
@@ -119,6 +159,8 @@ namespace Topshelf.FileSystemWatcher
                         fileSystemWatcher.Created += watcherOnCreated;
                     if (watcherOnDeleted != null)
                         fileSystemWatcher.Deleted += watcherOnDeleted;
+                    if (watcherOnRenamed != null)
+                        fileSystemWatcher.Renamed += watcherOnRenamed;
 
                     _watchers.Add(fileSystemWatcher);
 
@@ -168,7 +210,44 @@ namespace Topshelf.FileSystemWatcher
             });
         }
 
-        private static void BeforeStoppingService<T>(ServiceConfigurator<T> configurator, LogWriter log, FileSystemEventHandler watcherOnChanged) where T : class
+        private static void AfterStartingService<T>(ServiceConfigurator<T> configurator,
+            IEnumerable<FileSystemWatcherConfigurator.DirectoryConfiguration> configs, LogWriter log,
+            Action<RenamedEventArgs> fileSystemChanged) where T : class
+        {
+            if (fileSystemChanged == null)
+                return;
+
+            configurator.AfterStartingService(() =>
+            {
+                foreach (FileSystemWatcherConfigurator.DirectoryConfiguration config in configs)
+                {
+                    if (config.GetInitialStateEvent)
+                    {
+                        log.Info("[Topshelf.FileSystemWatcher] Checking for InitialState Events");
+
+                        string[] paths;
+                        if (!string.IsNullOrWhiteSpace(config.FileFilter))
+                        {
+                            paths = Directory.GetFiles(config.Path, config.FileFilter);
+                        }
+                        else
+                        {
+                            paths = Directory.GetFiles(config.Path);
+                        }
+
+                        if (paths.Any())
+                        {
+                            foreach (string path in paths)
+                            {
+                                fileSystemChanged(new RenamedEventArgs(WatcherChangeTypes.All, Path.GetDirectoryName(path), Path.GetFileName(path), Path.GetFileName(path)));
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        private static void BeforeStoppingService<T>(ServiceConfigurator<T> configurator, LogWriter log, FileSystemEventHandler watcherOnChanged, RenamedEventHandler watcherOnRename) where T : class
         {
             configurator.BeforeStoppingService(() =>
             {
@@ -180,6 +259,7 @@ namespace Topshelf.FileSystemWatcher
                         fileSystemWatcher.Changed -= watcherOnChanged;
                         fileSystemWatcher.Created -= watcherOnChanged;
                         fileSystemWatcher.Deleted -= watcherOnChanged;
+                        fileSystemWatcher.Renamed -= watcherOnRename;
                         fileSystemWatcher.Dispose();
                         log.Info("[Topshelf.FileSystemWatcher] Unsubscribed for FileSystemChange events");
                     }

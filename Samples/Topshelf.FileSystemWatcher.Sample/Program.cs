@@ -25,7 +25,10 @@ namespace Topshelf.FileSystemWatcher.Sample
                         }
                         return true;
                     });
-                    s.WhenStopped((service, host) => true);
+                    s.WhenStopped((service, host) =>
+                    {
+                        return true;
+                    });
                     s.WhenFileSystemCreated(configurator =>
                         configurator.AddDirectory(dir =>
                         {
@@ -33,6 +36,13 @@ namespace Topshelf.FileSystemWatcher.Sample
                             dir.CreateDir = true;
                             dir.NotifyFilters = NotifyFilters.FileName;
                         }), FileSystemCreated);
+
+                    s.WhenFileSystemRenamed(configurator =>
+                        configurator.AddDirectory(dir =>
+                        {
+                            dir.Path = _testDir;
+                            dir.CreateDir = true;
+                        }), FileSystemRenamed);
                 });
             });
         }
@@ -41,5 +51,10 @@ namespace Topshelf.FileSystemWatcher.Sample
         {
             Console.WriteLine("New file created! ChangeType = {0} FullPath = {1} Name = {2} FileSystemEventType {3}", topshelfFileSystemEventArgs.ChangeType, topshelfFileSystemEventArgs.FullPath, topshelfFileSystemEventArgs.Name, topshelfFileSystemEventArgs.FileSystemEventType);
         }
+
+	    private static void FileSystemRenamed(RenamedEventArgs renamedEventArgs)
+	    {
+                Console.WriteLine("File renamed! ChangeType = {0} FullPath = {1} Name = {2} OldName = {3}", renamedEventArgs.ChangeType, renamedEventArgs.FullPath, renamedEventArgs.Name, renamedEventArgs.OldName);
+	    }
     }
 }
